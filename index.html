@@ -1,1 +1,344 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>최강 스케일 2D 멀티 플레이 슈팅</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
 
+    <div id="menu-bar">
+        <div class="currency">💰 COIN: <span id="coin-count">0</span></div>
+        <div class="buttons">
+            <button onclick="toggleModal('shop-modal')">🛒 무기 상점</button>
+            <button onclick="toggleModal('settings-modal')">⚙️ 그래픽 설정</button>
+            <a href="https://discord.gg/YOUR_INVITE_LINK" target="_blank" class="discord-btn">💬 디스코드</a>
+        </div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="shop-modal" class="modal">
+        <div class="modal-content">
+            <h2>🛒 WEAPON SHOP</h2>
+            <div class="shop-item">
+                <span>🔫 듀얼 블래스터 (속도+연사)</span>
+                <button onclick="buyWeapon('dual', 30)">비용: 30 💰</button>
+            </div>
+            <div class="shop-item">
+                <span>⚡ 플라즈마 레이저 (대형 캐논)</span>
+                <button onclick="buyWeapon('laser', 70)">비용: 70 💰</button>
+            </div>
+            <button class="close-btn" onclick="toggleModal('shop-modal')">닫기</button>
+        </div>
+    </div>
+
+    <div id="settings-modal" class="modal">
+        <div class="modal-content">
+            <h2>⚙️ GRAPHICS SETTINGS</h2>
+            <label>
+                품질 설정:
+                <select id="graphics-quality" onchange="changeQuality()">
+                    <option value="high">풀 매끄러움 (고화질 이펙트 + 파티클)</option>
+                    <option value="low">최적화 모드 (이펙트 최소화)</option>
+                </select>
+            </label>
+            <button class="close-btn" onclick="toggleModal('settings-modal')">닫기</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+
+        // 화면 크기 맞춤
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // 🚨 디스코드 웹훅 설정 (여기에 자신의 웹훅 URL을 붙여넣으세요)
+        const DISCORD_WEBHOOK_URL = "YOUR_DISCORD_WEBHOOK_URL";
+
+        // 게임 핵심 글로벌 상태
+        let config = { graphics: 'high' };
+        const keys = {};
+        const bullets = [];
+        const enemies = [];
+        const particles = []; // 고그래픽용 파티클 배열
+
+        // 플레이어 클래스
+        class Player {
+            constructor() {
+                this.x = canvas.width / 2;
+                this.y = canvas.height / 2;
+                this.radius = 22;
+                this.speed = 5;
+                this.angle = 0;
+                this.coins = 0;
+                this.weapon = 'normal';
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+                
+                // 플레이어 본체 (깃허브 이미지 대신 캔버스 드로잉 기술로 렌더링 - 파일 절약 및 고스케일 표현 가능)
+                ctx.beginPath();
+                ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = "#3498db";
+                ctx.fill();
+                ctx.lineWidth = 3;
+                ctx.strokeStyle = "#fff";
+                ctx.stroke();
+
+                // 총구 방향 표시
+                ctx.beginPath();
+                ctx.rect(0, -6, 30, 12);
+                ctx.fillStyle = "#2c3e50";
+                ctx.fill();
+                ctx.stroke();
+                
+                ctx.restore();
+            }
+
+            move() {
+                if (keys['w'] || keys['ㅂ']) this.y -= this.speed;
+                if (keys['s'] || keys['ㄴ']) this.y += this.speed;
+                if (keys['a'] || keys['ㅁ']) this.x -= this.speed;
+                if (keys['d'] || keys['ㅇ']) this.x += this.speed;
+            }
+        }
+
+        // AI 적 클래스 (일반몹, 보스몹 스케일 확장 가능)
+        class Enemy {
+            constructor(x, y, type = 'normal') {
+                this.x = x;
+                this.y = y;
+                this.type = type;
+                this.radius = type === 'boss' ? 45 : 20;
+                this.speed = type === 'boss' ? 1.2 : 2.5;
+                this.hp = type === 'boss' ? 200 : 30;
+                this.color = type === 'boss' ? "#e74c3c" : "#e67e22";
+            }
+
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.lineWidth = 2;
+                ctx.strokeStyle = "#fff";
+                ctx.stroke();
+
+                // 체력 바 표시 (최강 스케일 디테일)
+                ctx.fillStyle = "rgba(0,0,0,0.5)";
+                ctx.fillRect(this.x - 20, this.y - this.radius - 10, 40, 5);
+                ctx.fillStyle = "#2ecc71";
+                const maxHp = this.type === 'boss' ? 200 : 30;
+                ctx.fillRect(this.x - 20, this.y - this.radius - 10, (this.hp / maxHp) * 40, 5);
+            }
+
+            update(pX, pY) {
+                const dx = pX - this.x;
+                const dy = pY - this.y;
+                const dist = Math.hypot(dx, dy);
+                if (dist > 1) {
+                    this.x += (dx / dist) * this.speed;
+                    this.y += (dy / dist) * this.speed;
+                }
+            }
+        }
+
+        // 총알 클래스
+        class Bullet {
+            constructor(x, y, angle, type) {
+                this.x = x;
+                this.y = y;
+                this.speed = type === 'laser' ? 14 : 9;
+                this.dx = Math.cos(angle) * this.speed;
+                this.dy = Math.sin(angle) * this.speed;
+                this.radius = type === 'laser' ? 8 : type === 'dual' ? 5 : 4;
+                this.color = type === 'laser' ? "#9b59b6" : type === 'dual' ? "#f1c40f" : "#f39c12";
+                this.damage = type === 'laser' ? 35 : type === 'dual' ? 15 : 10;
+            }
+            update() {
+                this.x += this.dx;
+                this.y += this.dy;
+            }
+            draw() {
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+            }
+        }
+
+        // 파티클 시스템 (그래픽 설정 '상'일 때 폭발 효과)
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x; this.y = y;
+                this.dx = (Math.random() - 0.5) * 6;
+                this.dy = (Math.random() - 0.5) * 6;
+                this.radius = Math.random() * 3 + 1;
+                this.alpha = 1;
+                this.color = color;
+            }
+            update() {
+                this.x += this.dx; this.y += this.dy;
+                this.alpha -= 0.03;
+            }
+            draw() {
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        // 인스턴스 생성
+        const player = new Player();
+
+        // 입력 처리
+        window.addEventListener("keydown", (e) => keys[e.key.toLowerCase()] = true);
+        window.addEventListener("keyup", (e) => keys[e.key.toLowerCase()] = false);
+        window.addEventListener("mousemove", (e) => {
+            player.angle = Math.atan2(e.clientY - player.y, e.clientX - player.x);
+        });
+
+        // 발사 로직
+        window.addEventListener("click", (e) => {
+            if (e.clientY < 60) return; // 메뉴바 클릭 씹기
+
+            if (player.weapon === 'dual') {
+                // 양옆으로 두 발 나가는 스케일
+                bullets.push(new Bullet(player.x, player.y, player.angle - 0.1, 'dual'));
+                bullets.push(new Bullet(player.x, player.y, player.angle + 0.1, 'dual'));
+            } else {
+                bullets.push(new Bullet(player.x, player.y, player.angle, player.weapon));
+            }
+        });
+
+        // 디스코드 웹훅 로깅 시스템
+        function sendLog(message) {
+            if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL.includes("YOUR_")) return;
+            fetch(DISCORD_WEBHOOK_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    embeds: [{
+                        title: "⚔️ 실시간 전투 로그",
+                        description: message,
+                        color: 3447003,
+                        timestamp: new Date()
+                    }]
+                })
+            }).catch(e => console.log("웹훅 전송 누락"));
+        }
+
+        // 적 스폰 타이머 (시간이 갈수록 보스도 등장하는 대규모 메커니즘)
+        setInterval(() => {
+            if (enemies.length < 8) {
+                const isBoss = Math.random() < 0.15 && player.coins > 50;
+                const edgeX = Math.random() > 0.5 ? 0 : canvas.width;
+                const edgeY = Math.random() * canvas.height;
+                enemies.push(new Enemy(edgeX, edgeY, isBoss ? 'boss' : 'normal'));
+            }
+        }, 1800);
+
+        // 메인 루프 인스턴스 실행
+        function update() {
+            ctx.fillStyle = config.graphics === 'high' ? "rgba(26, 26, 26, 0.3)" : "#1a1a1a"; 
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            player.move();
+            player.draw();
+
+            // 파티클 처리
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].draw();
+                if (particles[i].alpha <= 0) particles.splice(i, 1);
+            }
+
+            // 총알 처리
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const b = bullets[i];
+                b.update();
+                b.draw();
+
+                if (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height) {
+                    bullets.splice(i, 1);
+                    continue;
+                }
+
+                // 충돌 감지
+                for (let j = enemies.length - 1; j >= 0; j--) {
+                    const e = enemies[j];
+                    if (Math.hypot(b.x - e.x, b.y - e.y) < b.radius + e.radius) {
+                        e.hp -= b.damage;
+                        bullets.splice(i, 1);
+
+                        // 고화질 설정일 때만 파티클 생성 효과 적용
+                        if (config.graphics === 'high') {
+                            for(let p=0; p<8; p++) particles.push(new Particle(e.x, e.y, e.color));
+                        }
+
+                        if (e.hp <= 0) {
+                            const reward = e.type === 'boss' ? 50 : 10;
+                            player.coins += reward;
+                            document.getElementById("coin-count").innerText = player.coins;
+                            sendLog(`🎯 **${e.type.toUpperCase()} 적 제거 완료!**\n현상금: +${reward} 코인\n보유 코인: ${player.coins}`);
+                            enemies.splice(j, 1);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // 적 업데이트
+            enemies.forEach(e => {
+                e.update(player.x, player.y);
+                e.draw();
+            });
+
+            requestAnimationFrame(update);
+        }
+
+        // 모달 관리 인터페이스
+        function toggleModal(id) {
+            const m = document.getElementById(id);
+            m.style.display = m.style.display === 'flex' ? 'none' : 'flex';
+        }
+
+        function buyWeapon(type, cost) {
+            if (player.coins >= cost) {
+                player.coins -= cost;
+                player.weapon = type;
+                document.getElementById("coin-count").innerText = player.coins;
+                sendLog(`🛒 **상점 아이템 해제**\n구매 무기: [${type.toUpperCase()}]\n남은 잔액: ${player.coins}`);
+                alert("무기 장착 성공!");
+                toggleModal('shop-modal');
+            } else {
+                alert("코인이 부족합니다!");
+            }
+        }
+
+        function changeQuality() {
+            config.graphics = document.getElementById("graphics-quality").value;
+            sendLog(`⚙️ **그래픽 설정 변동:** 옵션 [${config.graphics.toUpperCase()}]`);
+        }
+
+        // 게임 구동 초기화 로그
+        sendLog("🚀 **배포 인스턴스 활성화 완료**\n새로운 플레이어가 접속하여 전장에 참여했습니다.");
+        update();
+    </script>
+</body>
+</html>
